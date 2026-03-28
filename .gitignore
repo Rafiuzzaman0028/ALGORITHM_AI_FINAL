@@ -1,0 +1,28 @@
+# Environments
+venv/
+env/
+.env
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Node (in case of generated React projects)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# AI Generated Output / Artifacts
+generated_projects/
+*.pdf
+
+# IDEs and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

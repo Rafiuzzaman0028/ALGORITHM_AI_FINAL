@@ -1,0 +1,12 @@
+{
+    "name": "website_basic",
+    "description": "A simple frontend and backend structure for a generic website.",
+    "structure": [
+        "frontend/index.html",
+        "frontend/style.css",
+        "frontend/script.js",
+        "backend/server.js",
+        "docs/architecture.txt",
+        "docs/requirements.txt"
+    ]
+}

@@ -1,0 +1,10 @@
+{
+    "name": "api_basic",
+    "description": "A basic Node.js/Python API structure.",
+    "structure": [
+        "server.js",
+        "routes/index.js",
+        "models/index.js",
+        "docs/api_spec.txt"
+    ]
+}
