@@ -64,3 +64,43 @@ class OpenAIProvider(BaseProvider):
                 "output": str(e),
                 "tokens_used": None,
             }
+
+    def generate_chat_response(self, messages: list, config: dict = None):
+        """
+        Generate response from OpenAI using a conversation history.
+
+        Args:
+            messages (list): List of message dictionaries containing "role" and "content"
+            config (dict): Optional model configuration
+
+        Returns:
+            dict: Standardized response
+        """
+        try:
+            model = "gpt-4o-mini"  # Default model
+
+            if config and "model" in config:
+                model = config["model"]
+
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+            )
+
+            output_text = response.choices[0].message.content
+
+            return {
+                "provider": "openai",
+                "status": "success",
+                "output": output_text,
+                "tokens_used": response.usage.total_tokens if response.usage else None,
+            }
+
+        except Exception as e:
+            return {
+                "provider": "openai",
+                "status": "error",
+                "output": str(e),
+                "tokens_used": None,
+            }

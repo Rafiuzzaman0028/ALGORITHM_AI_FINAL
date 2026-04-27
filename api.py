@@ -14,6 +14,17 @@ engine = AIEngine()
 class GenerateRequest(BaseModel):
     prompt: str
 
+class ChatRequest(BaseModel):
+    prompt: str
+    session_id: str = "default"
+
+# In-memory storage for chat sessions
+chat_sessions = {}
+
+# Initialize a chat provider for the conversational endpoint
+from ai_engine.providers.provider_factory import ProviderFactory
+chat_provider = ProviderFactory.get_provider("openai")
+
 @app.get("/")
 def read_root():
     return {"status": "AI Engine Server is running. Visit /docs to test endpoints."}
@@ -34,6 +45,46 @@ def generate_project(req: GenerateRequest):
             "message": "AI generation completed.",
             "data": result
         }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/chat")
+def chat_endpoint(req: ChatRequest):
+    """
+    Fast, conversational endpoint that bypasses the heavy pipeline and maintains session history.
+    """
+    print(f"\\n[FASTAPI CHAT] Session: {req.session_id} | Prompt: {req.prompt}\\n")
+    
+    try:
+        # Initialize session if not exists
+        if req.session_id not in chat_sessions:
+            chat_sessions[req.session_id] = [
+                {"role": "system", "content": "You are a helpful AI assistant engaging in a conversation."}
+            ]
+            
+        # Append user message
+        chat_sessions[req.session_id].append({"role": "user", "content": req.prompt})
+        
+        # Get response
+        result = chat_provider.generate_chat_response(chat_sessions[req.session_id])
+        
+        if result["status"] == "success":
+            # Append assistant response to history
+            chat_sessions[req.session_id].append({"role": "assistant", "content": result["output"]})
+            
+            return {
+                "status": "success",
+                "message": "Chat response generated.",
+                "data": {
+                    "response": result["output"],
+                    "session_id": req.session_id
+                }
+            }
+        else:
+            raise Exception(result.get("output", "Unknown error from provider"))
+            
     except Exception as e:
         import traceback
         traceback.print_exc()
