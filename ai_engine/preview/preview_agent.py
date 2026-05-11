@@ -17,120 +17,53 @@ class PreviewAgent:
         sock.close()
         return port
 
-    def read_package_json(self, project_path):
-        package_json_path = Path(project_path) / "package.json"
+    def read_package_json(self, folder_path):
+        package_json_path = Path(folder_path) / "package.json"
 
         if not package_json_path.exists():
-            raise RuntimeError("package.json not found")
+            return {}
 
         try:
             return json.loads(package_json_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise RuntimeError(f"Could not read package.json: {exc}") from exc
+        except:
+            return {}
 
-    def choose_npm_script(self, package_json, package_json_path=None):
-        scripts = package_json.get("scripts") or {}
+    def install_dependencies(self, folder_path):
+        folder_path = Path(folder_path)
 
-        # Prefer start for preview because it usually uses plain node.
-        for script_name in ("start", "serve", "preview"):
-            if script_name in scripts:
-                return script_name
+        package_json = folder_path / "package.json"
 
-        # Use dev only if no better option exists.
-        if "dev" in scripts:
-            dev_script = scripts["dev"]
+        if not package_json.exists():
+            return
 
-            # If dev uses nodemon, replace it with node so preview works without nodemon.
-            if "nodemon" in dev_script:
-                scripts["dev"] = dev_script.replace("nodemon", "node")
+        node_modules = folder_path / "node_modules"
 
-                if package_json_path:
-                    package_json_path.write_text(
-                        json.dumps(package_json, indent=2),
-                        encoding="utf-8"
-                    )
+        if node_modules.exists():
+            return
 
-            return "dev"
+        npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
 
-        available = ", ".join(sorted(scripts.keys())) or "none"
-        raise RuntimeError(
-            f"No preview script found in package.json. Available scripts: {available}"
-        )
+        print(f"\nInstalling dependencies: {folder_path}\n")
 
-    def install_node_dependencies(self, project_path, npm_cmd, env, script_name):
-        """
-        Install npm dependencies if node_modules is missing.
-        This fixes errors like: Cannot find module 'express'.
-        """
-
-        node_modules_path = Path(project_path) / "node_modules"
-
-        if node_modules_path.exists():
-            return {
-                "success": True,
-                "skipped": True,
-                "message": "node_modules already exists"
-            }
-
-        install_process = subprocess.run(
+        subprocess.run(
             [npm_cmd, "install"],
-            cwd=str(project_path),
+            cwd=str(folder_path),
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=env,
-            timeout=180
+            timeout=300
         )
 
-        if install_process.returncode != 0:
-            return {
-                "success": False,
-                "error": "npm install failed",
-                "stdout": install_process.stdout,
-                "stderr": install_process.stderr,
-                "project_type": "node",
-                "script_used": script_name
-            }
-
-        return {
-            "success": True,
-            "skipped": False,
-            "message": "npm install completed"
-        }
-
-    def find_index_html(self, project_path):
-        project_path = Path(project_path)
-
-        direct_index = project_path / "index.html"
-        if direct_index.exists():
-            return direct_index
-
-        matches = list(project_path.rglob("index.html"))
-        if matches:
-            return matches[0]
-
-        return None
-
-    def find_python_entry(self, project_path):
-        project_path = Path(project_path)
-
-        preferred = [
-            "app.py",
-            "main.py",
-            "server.py",
-            "script.py"
-        ]
-
-        for name in preferred:
-            file_path = project_path / name
-            if file_path.exists():
-                return file_path
-
-        matches = list(project_path.rglob("*.py"))
-        if matches:
-            return matches[0]
-
-        return None
+    def start_process(self, cmd, cwd, env):
+        return subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env
+        )
 
     def start_preview(self, project_path):
         try:
@@ -142,132 +75,272 @@ class PreviewAgent:
                     "error": "Project path does not exist"
                 }
 
-            env = os.environ.copy()
-            port = self.get_free_port()
-            env["PORT"] = str(port)
-            env.setdefault("HOST", "127.0.0.1")
-
             npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
             python_cmd = "python"
 
-            package_json_path = project_path / "package.json"
+            # =========================================================
+            # FRONTEND/BACKEND DETECTION
+            # =========================================================
 
-            # 1. Node / React / Vite / Express project
-            if package_json_path.exists():
-                try:
-                    package_json = self.read_package_json(project_path)
-                    script_name = self.choose_npm_script(package_json, package_json_path)
-                except RuntimeError as exc:
+            client_path = None
+            server_path = None
+
+            for folder in ["client", "frontend"]:
+                path = project_path / folder
+                if (path / "package.json").exists():
+                    client_path = path
+                    break
+
+            for folder in ["server", "backend", "api"]:
+                path = project_path / folder
+                if (path / "package.json").exists():
+                    server_path = path
+                    break
+
+            root_package = project_path / "package.json"
+
+            # =========================================================
+            # FULLSTACK PROJECT
+            # =========================================================
+
+            if client_path:
+
+                frontend_port = self.get_free_port()
+                backend_port = self.get_free_port()
+
+                frontend_env = os.environ.copy()
+                backend_env = os.environ.copy()
+
+                frontend_env["PORT"] = str(frontend_port)
+                backend_env["PORT"] = str(backend_port)
+
+                frontend_env["BROWSER"] = "none"
+
+                # Install dependencies
+                self.install_dependencies(project_path)
+
+                if client_path:
+                    self.install_dependencies(client_path)
+
+                if server_path:
+                    self.install_dependencies(server_path)
+
+                backend_process = None
+
+                # -----------------------------------------------------
+                # START BACKEND
+                # -----------------------------------------------------
+
+                if server_path:
+                    server_package = self.read_package_json(server_path)
+
+                    server_scripts = server_package.get("scripts", {})
+
+                    backend_script = None
+
+                    for script in ["dev", "start"]:
+                        if script in server_scripts:
+                            backend_script = script
+                            break
+
+                    if backend_script:
+                        backend_process = self.start_process(
+                            [npm_cmd, "run", backend_script],
+                            cwd=server_path,
+                            env=backend_env
+                        )
+
+                # -----------------------------------------------------
+                # START FRONTEND
+                # -----------------------------------------------------
+
+                client_package = self.read_package_json(client_path)
+
+                client_scripts = client_package.get("scripts", {})
+
+                frontend_script = None
+
+                for script in ["dev", "start"]:
+                    if script in client_scripts:
+                        frontend_script = script
+                        break
+
+                if not frontend_script:
                     return {
                         "success": False,
-                        "error": str(exc)
+                        "error": "No frontend script found"
                     }
 
-                install_result = self.install_node_dependencies(
-                    project_path=project_path,
-                    npm_cmd=npm_cmd,
-                    env=env,
-                    script_name=script_name
+                frontend_process = self.start_process(
+                    [npm_cmd, "run", frontend_script],
+                    cwd=client_path,
+                    env=frontend_env
                 )
 
-                if not install_result.get("success"):
-                    return install_result
+                time.sleep(8)
 
-                cmd = [
-                    npm_cmd,
-                    "run",
-                    script_name
-                ]
+                if frontend_process.poll() is not None:
+                    stdout, stderr = frontend_process.communicate()
 
-                cwd = project_path
-                project_type = "node"
-                script_used = script_name
+                    return {
+                        "success": False,
+                        "error": "Frontend failed to start",
+                        "stdout": stdout,
+                        "stderr": stderr
+                    }
 
-            else:
-                index_html = self.find_index_html(project_path)
+                preview_url = f"http://127.0.0.1:{frontend_port}"
 
-                # 2. Plain HTML/CSS/JS project
-                if index_html:
-                    cwd = index_html.parent
+                self.active_processes[str(project_path)] = {
+                    "frontend": frontend_process,
+                    "backend": backend_process,
+                    "url": preview_url,
+                    "frontend_port": frontend_port,
+                    "backend_port": backend_port
+                }
 
-                    cmd = [
+                return {
+                    "success": True,
+                    "url": preview_url,
+                    "frontend_port": frontend_port,
+                    "backend_port": backend_port,
+                    "project_type": "fullstack"
+                }
+
+            # =========================================================
+            # ROOT NODE PROJECT
+            # =========================================================
+
+            elif root_package.exists():
+
+                env = os.environ.copy()
+
+                port = self.get_free_port()
+
+                env["PORT"] = str(port)
+
+                self.install_dependencies(project_path)
+
+                package = self.read_package_json(project_path)
+
+                scripts = package.get("scripts", {})
+
+                script_name = None
+
+                for script in ["dev", "start"]:
+                    if script in scripts:
+                        script_name = script
+                        break
+
+                if not script_name:
+                    return {
+                        "success": False,
+                        "error": "No runnable npm script found"
+                    }
+
+                process = self.start_process(
+                    [npm_cmd, "run", script_name],
+                    cwd=project_path,
+                    env=env
+                )
+
+                time.sleep(5)
+
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate()
+
+                    return {
+                        "success": False,
+                        "error": "Node project failed to start",
+                        "stdout": stdout,
+                        "stderr": stderr
+                    }
+
+                preview_url = f"http://127.0.0.1:{port}"
+
+                self.active_processes[str(project_path)] = {
+                    "frontend": process,
+                    "url": preview_url,
+                    "frontend_port": port
+                }
+
+                return {
+                    "success": True,
+                    "url": preview_url,
+                    "project_type": "node"
+                }
+
+            # =========================================================
+            # HTML PROJECT
+            # =========================================================
+
+            index_html = project_path / "index.html"
+
+            if index_html.exists():
+
+                port = self.get_free_port()
+
+                process = self.start_process(
+                    [
                         python_cmd,
                         "-m",
                         "http.server",
                         str(port),
                         "--bind",
                         "127.0.0.1"
-                    ]
+                    ],
+                    cwd=project_path,
+                    env=os.environ.copy()
+                )
 
-                    project_type = "html"
-                    script_used = "python -m http.server"
+                preview_url = f"http://127.0.0.1:{port}"
 
-                else:
-                    python_entry = self.find_python_entry(project_path)
-
-                    # 3. Python project
-                    if python_entry:
-                        cwd = python_entry.parent
-
-                        cmd = [
-                            python_cmd,
-                            str(python_entry)
-                        ]
-
-                        project_type = "python"
-                        script_used = python_entry.name
-
-                    else:
-                        return {
-                            "success": False,
-                            "error": "Unsupported project type. No package.json, index.html, or Python entry file found."
-                        }
-
-            process = subprocess.Popen(
-                cmd,
-                cwd=str(cwd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env
-            )
-
-            time.sleep(3)
-
-            if process.poll() is not None:
-                stdout, stderr = process.communicate()
-
-                return {
-                    "success": False,
-                    "error": "Preview server failed to start",
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "project_type": project_type,
-                    "script_used": script_used
+                self.active_processes[str(project_path)] = {
+                    "frontend": process,
+                    "url": preview_url,
+                    "frontend_port": port
                 }
 
-            preview_url = f"http://127.0.0.1:{port}"
+                return {
+                    "success": True,
+                    "url": preview_url,
+                    "project_type": "html"
+                }
 
-            self.active_processes[str(project_path)] = {
-                "process": process,
-                "port": port,
-                "url": preview_url,
-                "project_type": project_type,
-                "script_used": script_used
-            }
+            # =========================================================
+            # PYTHON PROJECT
+            # =========================================================
 
-            return {
-                "success": True,
-                "url": preview_url,
-                "port": port,
-                "project_type": project_type,
-                "script_used": script_used
-            }
+            for py_file in ["app.py", "main.py", "server.py", "script.py"]:
 
-        except subprocess.TimeoutExpired:
+                py_path = project_path / py_file
+
+                if py_path.exists():
+
+                    process = self.start_process(
+                        [python_cmd, str(py_path)],
+                        cwd=project_path,
+                        env=os.environ.copy()
+                    )
+
+                    time.sleep(3)
+
+                    preview_url = "http://127.0.0.1:5000"
+
+                    self.active_processes[str(project_path)] = {
+                        "frontend": process,
+                        "url": preview_url
+                    }
+
+                    return {
+                        "success": True,
+                        "url": preview_url,
+                        "project_type": "python"
+                    }
+
             return {
                 "success": False,
-                "error": "Dependency installation timed out"
+                "error": "Unsupported project type"
             }
 
         except Exception as exc:
@@ -276,67 +349,64 @@ class PreviewAgent:
                 "error": str(exc)
             }
 
-    def stop_preview(self, project_path):
+    def stop_preview(self, project_path=None, port=None):
         try:
-            project_path = str(Path(project_path).resolve())
+            target_key = None
 
-            if project_path not in self.active_processes:
+            # 1. Prefer stopping by project path
+            if project_path:
+                resolved_path = str(Path(project_path).resolve())
+
+                if resolved_path in self.active_processes:
+                    target_key = resolved_path
+
+            # 2. Fallback: stop by frontend/backend port
+            if not target_key and port:
+                port = int(port)
+
+                for key, process_info in self.active_processes.items():
+                    if (
+                        process_info.get("frontend_port") == port
+                        or process_info.get("backend_port") == port
+                        or process_info.get("port") == port
+                    ):
+                        target_key = key
+                        break
+
+            if not target_key:
                 return {
                     "success": False,
-                    "error": "No active preview found"
+                    "error": "No active preview found for this project_path or port"
                 }
 
-            process_info = self.active_processes[project_path]
-            process = process_info["process"]
+            process_info = self.active_processes[target_key]
 
-            process.terminate()
+            stopped = []
 
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
+            for process_name in ["frontend", "backend", "process"]:
+                process = process_info.get(process_name)
 
-            del self.active_processes[project_path]
+                if process:
+                    try:
+                        process.terminate()
+
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+
+                        stopped.append(process_name)
+
+                    except Exception as exc:
+                        stopped.append(f"{process_name} stop error: {exc}")
+
+            del self.active_processes[target_key]
 
             return {
                 "success": True,
-                "message": "Preview stopped successfully"
-            }
-
-        except Exception as exc:
-            return {
-                "success": False,
-                "error": str(exc)
-            }
-
-    def get_preview_status(self, project_path):
-        try:
-            project_path = str(Path(project_path).resolve())
-
-            if project_path not in self.active_processes:
-                return {
-                    "success": False,
-                    "status": "not_running"
-                }
-
-            process_info = self.active_processes[project_path]
-            process = process_info["process"]
-
-            if process.poll() is not None:
-                del self.active_processes[project_path]
-
-                return {
-                    "success": False,
-                    "status": "stopped"
-                }
-
-            return {
-                "success": True,
-                "status": "running",
-                "url": process_info["url"],
-                "port": process_info["port"],
-                "project_type": process_info.get("project_type"),
-                "script_used": process_info.get("script_used")
+                "message": "Preview stopped successfully",
+                "stopped": stopped,
+                "project_path": target_key
             }
 
         except Exception as exc:

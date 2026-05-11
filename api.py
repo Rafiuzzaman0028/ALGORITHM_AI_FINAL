@@ -2,6 +2,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from ai_engine.core.ai_engine import AIEngine
 from ai_engine.preview.preview_agent import PreviewAgent
+from pydantic import BaseModel
+from typing import Optional
+
 
 
 app = FastAPI(
@@ -20,6 +23,11 @@ class GenerateRequest(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str
     session_id: str = "default"
+
+
+class StopPreviewRequest(BaseModel):
+    project_path: Optional[str] = None
+    port: Optional[int] = None
 
 # In-memory storage for chat sessions
 chat_sessions = {}
@@ -64,6 +72,18 @@ def preview_project(req: PreviewRequest):
     return preview_agent.start_preview(req.project_path)
 
 
+@app.post("/api/preview/stop")
+def stop_preview(req: StopPreviewRequest):
+    if not req.project_path and not req.port:
+        return {
+            "success": False,
+            "error": "Please provide project_path or port"
+        }
+
+    return preview_agent.stop_preview(
+        project_path=req.project_path,
+        port=req.port
+    )
 import os
 from pathlib import Path
 

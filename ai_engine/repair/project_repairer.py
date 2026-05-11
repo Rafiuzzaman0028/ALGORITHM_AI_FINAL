@@ -78,11 +78,20 @@ If you aren't sure which specific file is missing, return NONE.
 
 
     def create_file(self, project_path, filename, code):
-
         full_path = os.path.join(project_path, filename)
 
-        folder = os.path.dirname(full_path)
+        basename = os.path.basename(full_path)
 
+        # FIX: treat paths without extensions as folders
+        if "." not in basename:
+            os.makedirs(full_path, exist_ok=True)
+            return
+
+        # FIX: do not overwrite directories
+        if os.path.isdir(full_path):
+            return
+
+        folder = os.path.dirname(full_path)
         os.makedirs(folder, exist_ok=True)
 
         with open(full_path, "w", encoding="utf-8") as f:

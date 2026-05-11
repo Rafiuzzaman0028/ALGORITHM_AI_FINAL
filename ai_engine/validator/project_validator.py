@@ -42,14 +42,21 @@ class ProjectValidator:
     # NODE VALIDATION
 
     def validate_node_project(self):
-
         issues = []
 
-        if not self._exists("package.json"):
+        if not self._exists("package.json") and not self._exists("client/package.json"):
             issues.append("Missing package.json")
 
-        if not self._exists("server"):
-            issues.append("Missing server folder")
+        has_entry = any([
+            self._exists("server/server.js"),
+            self._exists("server/index.js"),
+            self._exists("client/src/index.js"),
+            self._exists("src/index.js"),
+            self._exists("index.js"),
+        ])
+
+        if not has_entry:
+            issues.append("Missing Node/React entry file")
 
         return self._build_result(issues)
 

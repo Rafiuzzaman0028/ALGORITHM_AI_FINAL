@@ -42,7 +42,6 @@ class SmartProjectBuilder:
         return files
 
     def extract_files(self, formatted_results):
-
         parser = FileParser()
         files = []
 
@@ -50,7 +49,6 @@ class SmartProjectBuilder:
             return []
 
         for item in formatted_results["formatted_results"]:
-
             output = item.get("output", "")
 
             print("\n========== AI OUTPUT ==========")
@@ -143,12 +141,8 @@ class SmartProjectBuilder:
         stack_name = self.detect_stack(files)
         project_name = self.create_dynamic_project_name(stack_name)
 
-        project_path = os.path.abspath(
-        os.path.join(self.output_dir, project_name)
-        )
+        project_path = os.path.abspath(os.path.join(self.output_dir, project_name))
         os.makedirs(project_path, exist_ok=False)
-
-        template = self.load_template(template_name) if template_name else None
 
         for filepath, code in files:
             filepath = self.sanitize_filepath(filepath)
@@ -157,17 +151,28 @@ class SmartProjectBuilder:
                 continue
 
             full_path = os.path.abspath(
-            os.path.normpath(os.path.join(project_path, filepath))
+                os.path.normpath(os.path.join(project_path, filepath))
             )
 
             if not full_path.startswith(project_path):
+                continue
+
+            basename = os.path.basename(full_path)
+
+            # If AI returned a folder like "server", "client", or "src"
+            if "." not in basename:
+                os.makedirs(full_path, exist_ok=True)
+                continue
+
+            # If the path already exists as a directory, skip it
+            if os.path.isdir(full_path):
                 continue
 
             folder = os.path.dirname(full_path)
             os.makedirs(folder, exist_ok=True)
 
             with open(full_path, "w", encoding="utf-8") as f:
-                f.write(code)
+                f.write(code or "")
 
         return project_path
 
@@ -186,7 +191,7 @@ class SmartProjectBuilder:
     def generate_project(self, formatted_results):
         files = self.extract_files(formatted_results)
 
-        # --- AUTOMATION / PYTHON SCRIPT SUPPORT ---
+        # Automation / Python script support
         if not files:
             for item in formatted_results.get("formatted_results", []):
                 if item.get("task_type") == "automation":
@@ -195,7 +200,9 @@ class SmartProjectBuilder:
                     if code:
                         stack_name = "python_project"
                         project_name = self.create_dynamic_project_name(stack_name)
-                        project_path = os.path.join(self.output_dir, project_name)
+                        project_path = os.path.abspath(
+                            os.path.join(self.output_dir, project_name)
+                        )
 
                         os.makedirs(project_path, exist_ok=False)
 
@@ -217,13 +224,13 @@ class SmartProjectBuilder:
                 "status": "no_files_detected"
             }
 
-        # --- NORMAL MULTI-FILE PROJECT ---
+        # Normal multi-file project
         project_path = self.create_project_structure(files)
-
         zip_path = self.create_zip(project_path)
 
         return {
             "status": "success",
             "project_path": project_path,
-            "zip_path": zip_path
+            "zip_path": zip_path,
+            "stack": self.detect_stack(files)
         }
