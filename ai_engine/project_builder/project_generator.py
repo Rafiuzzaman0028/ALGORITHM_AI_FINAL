@@ -12,11 +12,6 @@ except (ImportError, ModuleNotFoundError):
 
 
 class SmartProjectBuilder:
-    """
-    Converts AI output into project files and ZIP archive.
-    Creates a new dynamic project folder every time.
-    """
-
     def __init__(self, output_dir="generated_projects", templates_dir="templates"):
         self.output_dir = output_dir
         self.templates_dir = templates_dir
@@ -25,21 +20,7 @@ class SmartProjectBuilder:
     def extract_python_code(self, text):
         pattern = r"```[\w]*\n(.*?)```"
         matches = re.findall(pattern, text, re.DOTALL)
-
-        if matches:
-            return matches[0].strip()
-
-        return None
-
-    def parse_file_structure(self, text):
-        files = []
-        pattern = r'([\w\/\.-]+\.\w+).*?```[\w]*\n(.*?)```'
-        matches = re.findall(pattern, text, re.DOTALL)
-
-        for filepath, code in matches:
-            files.append((filepath.strip(), code.strip()))
-
-        return files
+        return matches[0].strip() if matches else None
 
     def extract_files(self, formatted_results):
         parser = FileParser()
@@ -50,46 +31,21 @@ class SmartProjectBuilder:
 
         for item in formatted_results["formatted_results"]:
             output = item.get("output", "")
-
-            print("\n========== AI OUTPUT ==========")
-            print(output)
-            print("================================\n")
-
             parsed_files = parser.parse_files(output)
-
-            print("PARSED FILES:", parsed_files)
 
             for filename, content in parsed_files.items():
                 files.append((filename, content))
 
         return files
 
-    def load_template(self, template_name):
-        template_path = os.path.join(
-            self.templates_dir,
-            template_name,
-            "metadata.json"
-        )
-
-        if os.path.exists(template_path):
-            with open(template_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-
-        return None
-
     def detect_stack(self, files):
         extensions = set()
-        filenames = set()
 
         for filepath, _ in files:
             clean = filepath.lower().replace("\\", "/")
-            filenames.add(os.path.basename(clean))
 
             if "." in clean:
                 extensions.add(clean.split(".")[-1])
-
-        if "package.json" in filenames:
-            return "nodejs_project"
 
         if extensions.intersection({"jsx", "tsx"}):
             return "react_project"
@@ -98,12 +54,9 @@ class SmartProjectBuilder:
             return "html_css_project"
 
         if extensions.intersection({"js", "ts"}):
-            return "nodejs_project"
+            return "frontend_project"
 
-        if extensions.intersection({"py"}):
-            return "python_project"
-
-        return "generic_project"
+        return "frontend_project"
 
     def create_dynamic_project_name(self, stack_name):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -112,9 +65,10 @@ class SmartProjectBuilder:
 
     def sanitize_filepath(self, filepath):
         filepath = filepath.strip().replace("\\", "/")
-        
-        # Remove invalid characters for Windows paths
-        filepath = re.sub(r'[<>:"|?*]', '', filepath)
+
+        invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
+        if any(char in filepath for char in invalid_chars):
+            return ""
 
         bad_roots = [
             "generated_projects",
@@ -140,12 +94,132 @@ class SmartProjectBuilder:
 
         return "/".join(filtered_parts)
 
-    def create_project_structure(self, files, template_name=None):
-        stack_name = self.detect_stack(files)
-        project_name = self.create_dynamic_project_name(stack_name)
+    def is_backend_file(self, filepath):
+        path = filepath.lower().replace("\\", "/")
 
-        project_path = os.path.abspath(os.path.join(self.output_dir, project_name))
-        os.makedirs(project_path, exist_ok=False)
+        blocked_prefixes = [
+            "server/",
+            "backend/",
+            "api/",
+            "routes/",
+            "controllers/",
+            "models/",
+            "middleware/",
+            "database/",
+            "db/",
+            "config/db",
+            "config/database"
+        ]
+
+        blocked_exact = [
+            "server.js",
+            "backend.js",
+            "database.js",
+            "db.js"
+        ]
+
+        if any(path.startswith(prefix) for prefix in blocked_prefixes):
+            return True
+
+        filename = os.path.basename(path)
+
+        if filename in blocked_exact:
+            return True
+
+        return False
+
+    def clean_package_json(self, code):
+        """
+        Keeps package.json frontend-only.
+        Also makes sure React projects include react-scripts
+        if the start command uses react-scripts.
+        """
+
+        try:
+            data = json.loads(code)
+
+            data.setdefault("dependencies", {})
+            data.setdefault("devDependencies", {})
+
+            backend_deps = [
+                "express",
+                "mongoose",
+                "mongodb",
+                "jsonwebtoken",
+                "bcrypt",
+                "bcryptjs",
+                "cors",
+                "dotenv",
+                "nodemon"
+            ]
+
+            for section in ["dependencies", "devDependencies"]:
+                for dep in backend_deps:
+                    data.get(section, {}).pop(dep, None)
+
+            all_text = json.dumps(data).lower()
+
+            is_vite = "vite" in all_text
+            is_react = (
+                "react" in all_text
+                or "jsx" in all_text
+                or "tsx" in all_text
+                or "react-scripts" in all_text
+            )
+
+            if is_vite:
+                data["dependencies"].setdefault("react", "^18.2.0")
+                data["dependencies"].setdefault("react-dom", "^18.2.0")
+                data["devDependencies"].setdefault("vite", "^5.0.0")
+                data["devDependencies"].setdefault("@vitejs/plugin-react", "^4.2.0")
+
+                data["scripts"] = {
+                    "dev": "vite --host 127.0.0.1",
+                    "start": "vite --host 127.0.0.1",
+                    "build": "vite build",
+                    "preview": "vite preview --host 127.0.0.1"
+                }
+
+            elif is_react:
+                data["dependencies"].setdefault("react", "^18.2.0")
+                data["dependencies"].setdefault("react-dom", "^18.2.0")
+                data["dependencies"].setdefault("react-scripts", "5.0.1")
+
+                data["scripts"] = {
+                    "start": "react-scripts start",
+                    "build": "react-scripts build",
+                    "test": "react-scripts test",
+                    "eject": "react-scripts eject"
+                }
+
+            else:
+                scripts = data.get("scripts", {})
+                cleaned_scripts = {}
+
+                for key, value in scripts.items():
+                    value_lower = str(value).lower()
+
+                    if any(word in value_lower for word in ["server", "backend", "nodemon", "express"]):
+                        continue
+
+                    cleaned_scripts[key] = value
+
+                if cleaned_scripts:
+                    data["scripts"] = cleaned_scripts
+
+            if not data["dependencies"]:
+                data.pop("dependencies", None)
+
+            if not data["devDependencies"]:
+                data.pop("devDependencies", None)
+
+            return json.dumps(data, indent=2)
+
+        except Exception:
+            return code
+
+    def create_project_structure(self, files, template_name=None):
+        frontend_files = []
 
         for filepath, code in files:
             filepath = self.sanitize_filepath(filepath)
@@ -153,6 +227,21 @@ class SmartProjectBuilder:
             if not filepath:
                 continue
 
+            if self.is_backend_file(filepath):
+                continue
+
+            if filepath.lower().endswith("package.json"):
+                code = self.clean_package_json(code)
+
+            frontend_files.append((filepath, code))
+
+        stack_name = self.detect_stack(frontend_files)
+        project_name = self.create_dynamic_project_name(stack_name)
+
+        project_path = os.path.abspath(os.path.join(self.output_dir, project_name))
+        os.makedirs(project_path, exist_ok=False)
+
+        for filepath, code in frontend_files:
             full_path = os.path.abspath(
                 os.path.normpath(os.path.join(project_path, filepath))
             )
@@ -162,12 +251,14 @@ class SmartProjectBuilder:
 
             basename = os.path.basename(full_path)
 
-            # If AI returned a folder like "server", "client", or "src"
+            invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
+            if any(char in basename for char in invalid_chars):
+                continue
+
             if "." not in basename:
                 os.makedirs(full_path, exist_ok=True)
                 continue
 
-            # If the path already exists as a directory, skip it
             if os.path.isdir(full_path):
                 continue
 
@@ -194,40 +285,11 @@ class SmartProjectBuilder:
     def generate_project(self, formatted_results):
         files = self.extract_files(formatted_results)
 
-        # Automation / Python script support
         if not files:
-            for item in formatted_results.get("formatted_results", []):
-                if item.get("task_type") == "automation":
-                    code = self.extract_python_code(item.get("output", ""))
-
-                    if code:
-                        stack_name = "python_project"
-                        project_name = self.create_dynamic_project_name(stack_name)
-                        project_path = os.path.abspath(
-                            os.path.join(self.output_dir, project_name)
-                        )
-
-                        os.makedirs(project_path, exist_ok=False)
-
-                        script_path = os.path.join(project_path, "script.py")
-
-                        with open(script_path, "w", encoding="utf-8") as f:
-                            f.write(code)
-
-                        zip_path = self.create_zip(project_path)
-
-                        return {
-                            "status": "success",
-                            "project_path": project_path,
-                            "zip_path": zip_path,
-                            "stack": stack_name
-                        }
-
             return {
                 "status": "no_files_detected"
             }
 
-        # Normal multi-file project
         project_path = self.create_project_structure(files)
         zip_path = self.create_zip(project_path)
 
@@ -235,5 +297,5 @@ class SmartProjectBuilder:
             "status": "success",
             "project_path": project_path,
             "zip_path": zip_path,
-            "stack": self.detect_stack(files)
+            "stack": "frontend_only"
         }

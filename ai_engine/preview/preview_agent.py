@@ -25,27 +25,77 @@ class PreviewAgent:
 
         try:
             return json.loads(package_json_path.read_text(encoding="utf-8"))
-        except:
+        except Exception:
             return {}
 
-    def install_dependencies(self, folder_path):
-        folder_path = Path(folder_path)
+    def write_package_json(self, folder_path, package):
+        package_json_path = Path(folder_path) / "package.json"
+        package_json_path.write_text(
+            json.dumps(package, indent=2),
+            encoding="utf-8"
+        )
 
+    def repair_frontend_package_json(self, folder_path):
+        folder_path = Path(folder_path)
+        package = self.read_package_json(folder_path)
+
+        if not package:
+            package = {}
+
+        package.setdefault("name", folder_path.name.lower().replace(" ", "-"))
+        package.setdefault("version", "1.0.0")
+        package.setdefault("private", True)
+        package.setdefault("dependencies", {})
+        package.setdefault("devDependencies", {})
+
+        package["dependencies"].setdefault("react", "^18.2.0")
+        package["dependencies"].setdefault("react-dom", "^18.2.0")
+        package["dependencies"].setdefault("react-scripts", "5.0.1")
+
+        package["scripts"] = {
+            "start": "react-scripts start",
+            "build": "react-scripts build",
+            "test": "react-scripts test",
+            "eject": "react-scripts eject"
+        }
+
+        self.write_package_json(folder_path, package)
+
+        self.install_dependencies(folder_path, force=True)
+
+    def install_dependencies(self, folder_path, force=False):
+        folder_path = Path(folder_path)
         package_json = folder_path / "package.json"
 
         if not package_json.exists():
             return
 
         node_modules = folder_path / "node_modules"
+        package = self.read_package_json(folder_path)
 
-        if node_modules.exists():
-            return
+        deps = package.get("dependencies", {})
+        dev_deps = package.get("devDependencies", {})
+        scripts = package.get("scripts", {})
+
+        needs_react_scripts = (
+            "react-scripts" in deps
+            or "react-scripts" in dev_deps
+            or "react-scripts" in json.dumps(scripts)
+        )
+
+        react_scripts_path = node_modules / "react-scripts"
+
+        if node_modules.exists() and not force:
+            if needs_react_scripts and not react_scripts_path.exists():
+                pass
+            else:
+                return
 
         npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
 
         print(f"\nInstalling dependencies: {folder_path}\n")
 
-        subprocess.run(
+        result = subprocess.run(
             [npm_cmd, "install"],
             cwd=str(folder_path),
             shell=False,
@@ -54,6 +104,13 @@ class PreviewAgent:
             text=True,
             timeout=300
         )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"npm install failed in {folder_path}\n"
+                f"STDOUT:\n{result.stdout}\n"
+                f"STDERR:\n{result.stderr}"
+            )
 
     def start_process(self, cmd, cwd, env):
         return subprocess.Popen(
@@ -64,6 +121,44 @@ class PreviewAgent:
             text=True,
             env=env
         )
+
+    def choose_frontend_script(self, folder_path):
+        package = self.read_package_json(folder_path)
+        scripts = package.get("scripts", {})
+
+        for script in ["dev", "start", "preview"]:
+            if script in scripts:
+                return script
+
+        self.repair_frontend_package_json(folder_path)
+        return "start"
+
+    def ensure_frontend_ready(self, folder_path):
+        folder_path = Path(folder_path)
+        package = self.read_package_json(folder_path)
+        scripts = package.get("scripts", {})
+
+        has_script = any(script in scripts for script in ["dev", "start", "preview"])
+
+        if not has_script:
+            self.repair_frontend_package_json(folder_path)
+            return "start"
+
+        selected_script = self.choose_frontend_script(folder_path)
+
+        command = scripts.get(selected_script, "")
+
+        if "react-scripts" in command:
+            package.setdefault("dependencies", {})
+            package["dependencies"].setdefault("react", "^18.2.0")
+            package["dependencies"].setdefault("react-dom", "^18.2.0")
+            package["dependencies"].setdefault("react-scripts", "5.0.1")
+            self.write_package_json(folder_path, package)
+            self.install_dependencies(folder_path, force=False)
+        else:
+            self.install_dependencies(folder_path, force=False)
+
+        return selected_script
 
     def start_preview(self, project_path):
         try:
@@ -77,10 +172,6 @@ class PreviewAgent:
 
             npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
             python_cmd = "python"
-
-            # =========================================================
-            # FRONTEND/BACKEND DETECTION
-            # =========================================================
 
             client_path = None
             server_path = None
@@ -99,12 +190,7 @@ class PreviewAgent:
 
             root_package = project_path / "package.json"
 
-            # =========================================================
-            # FULLSTACK PROJECT
-            # =========================================================
-
             if client_path:
-
                 frontend_port = self.get_free_port()
                 backend_port = self.get_free_port()
 
@@ -112,28 +198,22 @@ class PreviewAgent:
                 backend_env = os.environ.copy()
 
                 frontend_env["PORT"] = str(frontend_port)
-                backend_env["PORT"] = str(backend_port)
-
                 frontend_env["BROWSER"] = "none"
+                frontend_env["HOST"] = "127.0.0.1"
+                frontend_env["REACT_APP_API_URL"] = f"http://127.0.0.1:{backend_port}"
+                frontend_env["VITE_API_URL"] = f"http://127.0.0.1:{backend_port}"
 
-                # Install dependencies
+                backend_env["PORT"] = str(backend_port)
+                backend_env["HOST"] = "127.0.0.1"
+
                 self.install_dependencies(project_path)
 
-                if client_path:
-                    self.install_dependencies(client_path)
+                backend_process = None
 
                 if server_path:
                     self.install_dependencies(server_path)
 
-                backend_process = None
-
-                # -----------------------------------------------------
-                # START BACKEND
-                # -----------------------------------------------------
-
-                if server_path:
                     server_package = self.read_package_json(server_path)
-
                     server_scripts = server_package.get("scripts", {})
 
                     backend_script = None
@@ -150,26 +230,7 @@ class PreviewAgent:
                             env=backend_env
                         )
 
-                # -----------------------------------------------------
-                # START FRONTEND
-                # -----------------------------------------------------
-
-                client_package = self.read_package_json(client_path)
-
-                client_scripts = client_package.get("scripts", {})
-
-                frontend_script = None
-
-                for script in ["dev", "start"]:
-                    if script in client_scripts:
-                        frontend_script = script
-                        break
-
-                if not frontend_script:
-                    return {
-                        "success": False,
-                        "error": "No frontend script found"
-                    }
+                frontend_script = self.ensure_frontend_ready(client_path)
 
                 frontend_process = self.start_process(
                     [npm_cmd, "run", frontend_script],
@@ -207,36 +268,15 @@ class PreviewAgent:
                     "project_type": "fullstack"
                 }
 
-            # =========================================================
-            # ROOT NODE PROJECT
-            # =========================================================
-
             elif root_package.exists():
-
                 env = os.environ.copy()
-
                 port = self.get_free_port()
 
                 env["PORT"] = str(port)
+                env["HOST"] = "127.0.0.1"
+                env["BROWSER"] = "none"
 
-                self.install_dependencies(project_path)
-
-                package = self.read_package_json(project_path)
-
-                scripts = package.get("scripts", {})
-
-                script_name = None
-
-                for script in ["dev", "start"]:
-                    if script in scripts:
-                        script_name = script
-                        break
-
-                if not script_name:
-                    return {
-                        "success": False,
-                        "error": "No runnable npm script found"
-                    }
+                script_name = self.ensure_frontend_ready(project_path)
 
                 process = self.start_process(
                     [npm_cmd, "run", script_name],
@@ -244,7 +284,7 @@ class PreviewAgent:
                     env=env
                 )
 
-                time.sleep(5)
+                time.sleep(8)
 
                 if process.poll() is not None:
                     stdout, stderr = process.communicate()
@@ -267,17 +307,13 @@ class PreviewAgent:
                 return {
                     "success": True,
                     "url": preview_url,
+                    "frontend_port": port,
                     "project_type": "node"
                 }
-
-            # =========================================================
-            # HTML PROJECT
-            # =========================================================
 
             index_html = project_path / "index.html"
 
             if index_html.exists():
-
                 port = self.get_free_port()
 
                 process = self.start_process(
@@ -304,19 +340,14 @@ class PreviewAgent:
                 return {
                     "success": True,
                     "url": preview_url,
+                    "frontend_port": port,
                     "project_type": "html"
                 }
 
-            # =========================================================
-            # PYTHON PROJECT
-            # =========================================================
-
             for py_file in ["app.py", "main.py", "server.py", "script.py"]:
-
                 py_path = project_path / py_file
 
                 if py_path.exists():
-
                     process = self.start_process(
                         [python_cmd, str(py_path)],
                         cwd=project_path,
@@ -353,14 +384,12 @@ class PreviewAgent:
         try:
             target_key = None
 
-            # 1. Prefer stopping by project path
             if project_path:
                 resolved_path = str(Path(project_path).resolve())
 
                 if resolved_path in self.active_processes:
                     target_key = resolved_path
 
-            # 2. Fallback: stop by frontend/backend port
             if not target_key and port:
                 port = int(port)
 
