@@ -112,6 +112,9 @@ class SmartProjectBuilder:
 
     def sanitize_filepath(self, filepath):
         filepath = filepath.strip().replace("\\", "/")
+        
+        # Remove invalid characters for Windows paths
+        filepath = re.sub(r'[<>:"|?*]', '', filepath)
 
         bad_roots = [
             "generated_projects",
